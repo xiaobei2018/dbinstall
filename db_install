@@ -1,0 +1,431 @@
+#!/bin/bash
+#author: xiaobei
+#create: 2017-10-07
+#parameters:none
+#version:1.0
+#perpose:to install database silently
+#modified:none
+############################################################################
+#define macro to record function_name
+__functin_name__=""
+daytime=`date +%Y%m%d%H%M%S`
+current_dir=`pwd`
+IP=$(ifconfig eth0| grep "inet addr" | awk '{ print $2}' | awk -F: '{print $2}')
+HOST=$(hostname)
+############################################################################
+#configure parameters
+############################################################################
+password="handhand" #passwd of user oracle#
+oracle_base_path="/u01/app/oracle"
+oracle_home_path="$oracle_base_path/product/12.2.0/dbhome_1"
+oracle_sid="SRM"
+database_path="/u01/software" #数据库解压文件目录#
+systempasswd="Hand1234"       #数据库的sysdba密码
+PDB_NAME="PDB1"
+pdb_admin="srm_admin"
+user_name="srm"
+user_passwd="HandSrm#HR"
+############################################################################
+#log function
+############################################################################
+function log_info ()
+{
+DATE_N=`date "+%Y-%m-%d %H:%M:%S"`
+#USER_N=`whoami`
+USER_N=$1
+echo "${DATE_N} ${USER_N} execute $__functin_name__ [INFO] $2"
+echo "${DATE_N} ${USER_N} execute $__functin_name__ [INFO] $2" >> install_log
+}
+function log_error ()
+{
+DATE_N=`date "+%Y-%m-%d %H:%M:%S"`
+#USER_N=`whoami`
+USER_N=$1
+echo -e "\033[41;37m ${DATE_N} ${USER_N} execute $__functin_name__ [ERROR] $2 \033[0m"
+echo -e "${DATE_N} ${USER_N} execute $__functin_name__ [ERROR] $2 " >> install_log
+}
+function fn_log ()  {
+if [  $? -eq 0  ]
+then
+    log_info "$1" "$2 sucessed."
+    echo -e "\033[32m $@ sucessed. \033[0m"
+else
+    log_error "$1" "$2 failed."
+    echo -e "\033[41;37m $@ failed. \033[0m"
+    exit 1
+fi
+}
+############################################################################
+#check swap area>150M
+############################################################################
+function check_swap ()
+{
+__functin_name__="check_swap"
+swap=`free -m | grep Swap | awk '{print $4}'`
+if [ ${swap} -lt 150 ]
+then
+        log_error "root" "swap is $swap, less then 150M"
+        exit 1
+else
+        log_info "root" "swap is $swap greater then 150M"
+fi
+}
+############################################################################
+#check temp area>500M
+############################################################################
+function check_temp ()
+{
+	echo "check_temp do nothing"	
+}
+############################################################################
+#purpose:create oracle user if not exist
+#parameter:passwd
+############################################################################
+function create_user () 
+{
+__functin_name__="create_user"
+group_oinstall=`cat /etc/group|grep oinstall|wc -l`
+group_dba=`cat /etc/group|grep oinstall|wc -l`
+user_oracle=`cat /etc/passwd|grep oracle|wc -l`
+if [ $group_oinstall -ne 1 ]
+then 
+	groupadd oinstall
+	fn_log "root" "groupadd oinstall"
+fi
+if [ $group_dba -ne 1 ]
+then
+    groupadd dba
+	fn_log "root" "groupadd dba"
+fi
+if [ $user_oracle -ne 1 ]
+then 
+	useradd -g oinstall -G dba oracle
+	fn_log "root" "useradd -g oinstall -G dba oracle"
+	echo $1 | passwd oracle --stdin
+	fn_log "root" "set the password $1 of user oracle"
+fi
+}
+#create_user handhand
+############################################################################
+#1.yum install package needed
+############################################################################
+function yum_install ()
+{
+__functin_name__="yum_install"
+rm -f /var/run/yum.pid
+fn_log "root" "rm -f /var/run/yum.pid"
+yum -y install binutils compat-libcap1 compat-libstdc++-33 elfutils-libelf elfutils-libelf-devel gcc gcc-c++ glibc glibc-common glibc-devel glibc-headers kernel-headers ksh libaio  libaio-devel libgcc libgomp libstdc++ libstdc++-devel make numactl numactl-devel sysstat unixODBC unixODBC-devel
+fn_log "root" "yum -y install binutils compat-libcap1 compat-libstdc++-33 elfutils-libelf elfutils-libelf-devel gcc gcc-c++ glibc glibc-common glibc-devel glibc-headers kernel-headers ksh libaio  libaio-devel libgcc libgomp libstdc++ libstdc++-devel make numactl numactl-devel sysstat unixODBC unixODBC-devel "
+}
+############################################################################
+#2.modify some kernel parameters
+############################################################################
+function config_kernel ()
+{
+__functin_name__="config_kernel"
+cp /etc/sysctl.conf /etc/sysctl.conf${daytime}.bak
+sed -i "s/kernel\.shmmax/#kernel\.shmmax/g" /etc/sysctl.conf;sed -i '/^\#kernel\.shmmax/a\kernel\.shmmax = 4294967295' /etc/sysctl.conf
+sed -i "s/kernel\.shmall/#kernel\.shmall/g" /etc/sysctl.conf;sed -i '/^\#kernel\.shmall/a\kernel.shmall = 2097152' /etc/sysctl.conf
+sed -i '$a\fs.aio-max-nr = 1048576\nfs.file-max = 6815744\nkernel.shmmni = 4096\nkernel.sem = 250 32000 100 128\nnet.ipv4.ip_local_port_range = 9000 65500\nnet.core.rmem_default = 262144\nnet.core.rmem_max = 4194304\nnet.core.wmem_default = 262144\nnet.core.wmem_max = 1048586' /etc/sysctl.conf
+#make the parameter work#
+sysctl -p
+fn_log "root" "sed /etc/sysctl.conf to change system parameters"
+}
+############################################################################
+#3.modify login
+############################################################################
+function config_login ()
+{
+__functin_name__="config_kernel"
+cp /etc/pam.d/login /etc/pam.d/login${daytime}.bak
+sed -i '$a\#added#\nsession    required     pam_limits.so' /etc/pam.d/login
+fn_log "root" "sed /etc/pam.d/login to change login parameters"
+}
+############################################################################
+#4.modify limits
+############################################################################
+function config_limits ()
+{
+__functin_name__="config_limits"
+cp /etc/security/limits.conf /etc/security/limits.conf${daytime}.bak
+sed -i '$a\#added #\noracle soft nproc 8094\noracle hard nproc 16384\noracle soft nofile 16394\noracle hard nofile 65536\noracle soft stack 10240\n' /etc/security/limits.conf
+fn_log "root" "sed /etc/security/limits.conf to change login parameters"
+}
+############################################################################
+#5.shutdown iptables immediately(not last for reboot)
+############################################################################
+function stop_iptables ()
+{
+__functin_name__="stop_iptables"
+service iptables stop
+service iptables status
+log_info "root" "stop iptables"
+}
+############################################################################
+#6.forbidden selinux
+############################################################################
+function config_selinux ()
+{
+__functin_name__="config_selinux"
+cp /etc/selinux/config /etc/selinux/config${daytime}.bak
+sed -i 's/^SELINUX\=/#SELINUX\=/g' /etc/selinux/config;sed -i '/^\#SELINUX/a\SELINUX=disabled' /etc/selinux/config
+fn_log "root" "forbiden selinux"
+}
+############################################################################
+#7.hosts config
+############################################################################
+function config_hosts ()
+{
+__functin_name__="sed hosts"
+cp /etc/hosts /etc/hosts${daytime}.bak
+sed -i '$a\'$IP' '$HOST'' /etc/hosts
+fn_log "root" "config hosts file"
+}
+############################################################################
+#8.environment parameters configuration
+############################################################################
+function config_envi ()
+{
+__functin_name__="environment config"
+su - oracle -c "cp /home/oracle/.bash_profile /home/oracle/.bash_profile${daytime}.bak"
+sed -i '$a\export TMP=/tmp' /home/oracle/.bash_profile
+sed -i '$a\export ORACLE_BASE='$oracle_base_path'' /home/oracle/.bash_profile
+sed -i '$a\export ORACLE_HOME='$oracle_home_path'' /home/oracle/.bash_profile
+sed -i '$a\export ORACLE_SID='$oracle_sid'' /home/oracle/.bash_profile
+sed -i '$a\export PATH=$ORACLE_HOME\/bin:\/usr\/sbin:$ORACLE_HOME\/OPatch:$PATH' /home/oracle/.bash_profile
+sed -i '$a\export LD_LIBRARY_PATH=$ORACLE_HOME\/lib:\/lib:\/usr\/lib' /home/oracle/.bash_profile
+sed -i '$a\export CLASSPATH=$ORACLE_HOME\/JRE:$ORACLE_HOME\/jlib:$ORACLE_HOME\/rdbms\/jlib' /home/oracle/.bash_profile
+sed -i '$a\export NLS_LANG=AMERICAN_AMERICA.UTF8' /home/oracle/.bash_profile
+sed -i '$a\export LC_ALL=en_US.UTF-8' /home/oracle/.bash_profile
+su - oracle -c "source ~/.bash_profile"
+fn_log "config environment parameters"
+}
+############################################################################
+#9.prepare files
+############################################################################
+function create_dir ()
+{
+__functin_name__="create_dir"
+if [ ! -d "$oracle_base_path" ]
+then
+	mkdir -p "$oracle_base_path"
+	chown -R oracle:oinstall "${oracle_base_path%/*}"
+	chmod -R 755 "${oracle_base_path%/*}"	
+	fn_log "oracle" "create directory $oracle_base_path "
+fi
+database_path="/u01/software"
+if [ ! -d "${database_path}"/database"" ]
+then 
+        mkdir -p "$database_path"
+        fn_log "oracle" "the user of oracle create directory $database_path "
+	unzip linuxx64_12201_database.zip -d "$database_path"
+	chown -R oracle:oinstall "${database_path}"/database/""
+	chmod -R 755 "${database_path}"/database/""
+	fn_log "oracle" "the user of oracle unzip file to directory $database_path"
+fi
+}
+############################################################################
+#install db.rsp template file
+############################################################################
+function run_rsp ()
+{
+__functin_name__="run_rsp"
+chown oracle:oinstall db.rsp
+chmod 755 db.rsp
+chmod 777 ${current_dir}
+if [ -f ${current_dir}"/rsp_install.log" ]
+then 
+	cp ${current_dir}"/rsp_install.log" ${current_dir}"/rsp_install.log${daytime}"
+fi
+su - oracle -c "sh "${database_path}"/database/runInstaller"" -silent -responseFile ${current_dir}"/db.rsp" >> ${current_dir}"/rsp_install.log""
+log_info "oracle" ""${database_path}"/database"" -silent -responseFile db.rsp "
+timesleep=0
+while true
+	do
+		grep "As a root user, execute the following script" ${current_dir}"/rsp_install.log"
+		if [ $? -eq 0 ]
+			then 
+				script_1=`grep "1. /" ${current_dir}"/rsp_install.log"`
+				script_2=`grep "2. /" ${current_dir}"/rsp_install.log"`
+				sh ${script_1:3}
+				sh ${script_2:3}
+				fn_log "root" "execute 2 scripts"
+				break
+		else
+			sleep 20
+			timesleep=$(expr $timesleep + 20)
+			if [ $timesleep -ge 1000 ]
+				then 
+					log_error "root" "error occurred when installing db.rsp,please check"
+				exit 1
+			fi
+		fi
+done
+}
+############################################################################
+#run_dbt
+############################################################################
+function run_dbt ()
+{
+	__functin_name__="run_dbt"
+	chown oracle:oinstall SRM.dbt
+	chmod 755 SRM.dbt
+	if [ ! -d $oracle_base_path"/oradata" ] 
+	then
+	su - oracle -c "mkdir -p $oracle_base_path"/oradata"
+	fn_log "oracle" "create directory $oracle_base_path"/oradata"
+	fi
+	su - oracle -c " dbca -silent -createDatabase -templateName ${current_dir}"/SRM.dbt" -gdbname $oracle_sid -sid $oracle_sid -sysPassword $systempasswd -systemPassword $systempasswd -createAsContainerDatabase true >> ${current_dir}"/dbt_install.log""
+log_info "oracle" " dbca -silent -createDatabase -templateName ${current_dir}"/SRM.dbt" -gdbname $oracle_sid -sid $oracle_sid -sysPassword $systempasswd -systemPassword $systempasswd -createAsContainerDatabase true >> ${current_dir}"/dbt_install.log""
+timesleep=0
+while true 
+        do
+                grep "100% complete" ${current_dir}"/dbt_install.log"
+                if [ $? -eq 0 ]
+			then
+                         log_info "oracle" "installing dbt has succeeded"
+                                break
+                else
+                        sleep 600
+                        timesleep=$(expr $timesleep + 600)
+                        if [ $timesleep -ge 43200 ]
+                                then
+                                        log_error "oracle" "error occurred when installing dbt,please check"
+                                exit 1
+                        fi
+		fi
+done
+}
+############################################################################
+#run_netca
+############################################################################
+function run_netca ()
+{
+	__functin_name__="run_netca"
+	chown oracle:oinstall netca.rsp
+	chmod 755 netca.rsp
+if [ -f $oracle_home_path"/network/admin/listener.ora" ]
+then 
+	log_info "oracle" "listener.ora has existed,there is no need to install netca"
+	return 0
+fi	
+	su - oracle -c "netca /silent /responsefile ${current_dir}"/netca.rsp""
+	ls $oracle_home_path"/network/admin/" | grep listener.ora
+	fn_log "oracle" "run netca"
+}
+############################################################################
+#db_start and db_shut
+############################################################################
+function db_start ()
+{	
+	__functin_name__="db_start"
+	su - oracle -c "sqlplus / as sysdba <<EOF
+	startup;
+	exit;
+	EOF"
+	log_info "oracle" "db_start"
+}
+function db_shut ()
+{
+__functin_name__="db_shut"
+	su - oracle -c "sqlplus / as sysdba <<EOF
+	shutdown immediate;
+	exit;
+	EOF"
+	log_info "oracle" "db_shut"
+}
+############################################################################
+#check lsnrctl status
+############################################################################
+function check_lsnrctl ()
+{
+__functin_name__="check_lsnrctl"
+	db_start
+	su - oracle -c "lsnrctl start"
+	su - oracle -c "lsnrctl status"
+	fn_log "oracle" "check lsnrctl status"
+}
+############################################################################
+#create_pdb
+#parameter PDB_NAME ,sysPassword
+############################################################################
+function create_pdb ()
+{	
+	__functin_name__="create_pdb"
+	su - oracle -c "sqlplus / as sysdba <<EOF
+	!mkdir -p $oracle_base_path"/oradata/$oracle_sid/$PDB_NAME"
+	create pluggable database  $PDB_NAME admin user $pdb_admin identified by $systempasswd roles=(CONNECT,DBA) FILE_NAME_CONVERT=('$oracle_base_path"/oradata/$oracle_sid/pdbseed"','$oracle_base_path"/oradata/$oracle_sid/$PDB_NAME"');
+	alter pluggable database $PDB_NAME  open; 
+	alter pluggable database $PDB_NAME save state;
+	alter session set container=$PDB_NAME;
+	create tablespace $PDB_NAME"_data" datafile '$oracle_base_path"/oradata/$oracle_sid/$PDB_NAME/$PDB_NAME"_data01.dbf""' SIZE 2G AUTOEXTEND ON NEXT 50M MAXSIZE 24G,'$oracle_base_path"/oradata/$oracle_sid/$PDB_NAME/$PDB_NAME"_data02.dbf""' SIZE 2G AUTOEXTEND ON NEXT 50M MAXSIZE 24G;
+	CREATE TEMPORARY TABLESPACE $PDB_NAME"_temp" TEMPFILE '$oracle_base_path"/oradata/$oracle_sid/$PDB_NAME/$PDB_NAME"_temp01.dbf""' SIZE 1G AUTOEXTEND ON NEXT 5M MAXSIZE UNLIMITED ,'$oracle_base_path"/oradata/$oracle_sid/$PDB_NAME/$PDB_NAME"_temp02.dbf""' SIZE 1G AUTOEXTEND ON NEXT 5M MAXSIZE UNLIMITED;
+	CREATE USER $user_name IDENTIFIED BY $user_passwd DEFAULT TABLESPACE $PDB_NAME"_data" TEMPORARY TABLESPACE $PDB_NAME"_temp";
+	GRANT CONNECT,RESOURCE,DBA TO $user_name;
+GRANT CREATE ANY CONTEXT TO $user_name;
+GRANT CREATE ANY MATERIALIZED VIEW TO $user_name;
+GRANT CREATE ANY SYNONYM TO $user_name;
+GRANT CREATE ANY TABLE TO $user_name;
+GRANT CREATE DATABASE LINK TO $user_name;
+GRANT CREATE PROCEDURE TO $user_name;
+GRANT CREATE SEQUENCE TO $user_name;
+GRANT CREATE SESSION TO $user_name;
+GRANT CREATE TYPE TO $user_name;
+GRANT CREATE VIEW TO $user_name;
+GRANT ALTER SESSION TO $user_name;
+GRANT LOCK ANY TABLE TO $user_name;
+GRANT DEBUG CONNECT SESSION TO $user_name;
+GRANT SELECT ANY DICTIONARY TO $user_name;
+GRANT QUERY REWRITE TO $user_name;
+EOF"
+fn_log "oracle" "create pdb and user"
+}	
+############################################################################
+#config client
+############################################################################
+function config_client ()
+{
+        __functin_name__="config_client"
+        su - oracle -c "echo '$PDB_NAME = ' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '  (DESCRIPTION =' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '	 (ADDRESS_LIST =' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo ' 		 (ADDRESS = (PROTOCOL = TCP)(HOST = $IP)(PORT = 1521))' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '    )' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '    (CONNECT_DATA =' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '      (SERVER = DEDICATED)' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '      	(SERVICE_NAME = $PDB_NAME)' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '   )' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        su - oracle -c "echo '  )' >> $oracle_home_path"/network/admin/tnsnames.ora""
+        fn_log "oracle" "create tnsnames"
+}
+############################################################################
+#config database start when booting
+############################################################################
+function boot_start ()
+{
+	__functin_name__="config_client"
+		__functin_name__="config_client"
+	su - oracle -c "sed -i 's/ORACLE_HOME_LISTNER=\$1/#ORACLE_HOME_LISTNER=\$1/g' $oracle_home_path/bin/dbstart;sed -i '/^\#ORACLE_HOME_LISTNER/a\ORACLE_HOME_LISTNER=\$ORACLE_HOME' $oracle_home_path/bin/dbstart"
+	su - oracle -c "sed -i 's/ORACLE_HOME_LISTNER=\$1/#ORACLE_HOME_LISTNER=\$1/g' $oracle_home_path/bin/dbshut;sed -i '/^\#ORACLE_HOME_LISTNER/a\ORACLE_HOME_LISTNER=\$ORACLE_HOME' $oracle_home_path/bin/dbshut"
+	sed -i 's/dbhome_1:N/dbhome_1:Y/g' /etc/oratab
+	echo "su - oracle -lc $oracle_home_path"/bin/dbstart"" >> /etc/rc.d/rc.local
+	echo "su - oracle -lc $oracle_home_path"/bin/lsnrctl start"" >> /etc/rc.d/rc.local
+	fn_log "oracle and root" "create boot start"
+}
+yum_install
+config_kernel
+config_login
+config_limits
+stop_iptables
+config_selinux
+config_hosts
+create_user $password
+config_envi
+create_dir
+run_rsp
+run_dbt
+run_netca
+check_lsnrctl
+create_pdb
+config_client
+boot_start
